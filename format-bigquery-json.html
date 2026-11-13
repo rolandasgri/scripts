@@ -12,6 +12,7 @@
     --hover: #eef4ff;
     --muted: #9ca3af;
     --accent: #2563eb;
+    --cell-max: 350px;
   }
   * { box-sizing: border-box; }
   body {
@@ -43,9 +44,16 @@
     cursor: pointer;
   }
   button:hover { filter: brightness(1.08); }
+  button.secondary {
+    background: #fff;
+    color: var(--accent);
+    border: 1px solid var(--accent);
+  }
   .status { color: #6b7280; }
   .status.error { color: #b91c1c; }
   .table-wrap {
+    display: inline-block;   /* shrink to the table, don't span the full page */
+    max-width: 100%;
     overflow: auto;
     max-height: 70vh;
     border: 1px solid var(--border);
@@ -53,7 +61,6 @@
   }
   table {
     border-collapse: collapse;
-    width: 100%;
     font-variant-numeric: tabular-nums;
   }
   th, td {
@@ -61,6 +68,14 @@
     text-align: left;
     white-space: nowrap;
     border-bottom: 1px solid var(--border);
+  }
+  /* Columns size to their content; long values are cut off with an ellipsis */
+  .cell {
+    display: block;
+    max-width: var(--cell-max);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
   th {
     position: sticky;
@@ -72,6 +87,7 @@
   tbody tr:nth-child(even) { background: var(--stripe); }
   tbody tr:hover { background: var(--hover); }
   .num { text-align: right; }
+  td.num .cell { margin-left: auto; text-align: right; }
   td.null { color: var(--muted); }
 </style>
 </head>
@@ -84,6 +100,7 @@
 
 <div class="actions">
   <button id="show">Show table</button>
+  <button id="copy" class="secondary">Copy to clipboard</button>
   <span id="status" class="status">Tip: Cmd/Ctrl + Enter also works.</span>
 </div>
 
@@ -117,13 +134,17 @@ function isNumericColumn(rows, col) {
 
 function makeCell(value, numeric) {
   const td = document.createElement('td');
+  const span = document.createElement('span');
+  span.className = 'cell';
   if (isEmpty(value)) {
-    td.textContent = '—';
+    span.textContent = '—';
     td.className = 'null';
   } else {
     const s = String(value);
-    td.textContent = NUMBER_RE.test(s) ? groupDigits(s) : s;
+    span.textContent = NUMBER_RE.test(s) ? groupDigits(s) : s;
+    span.title = span.textContent;   // full value on hover when truncated
   }
+  td.appendChild(span);
   if (numeric) td.classList.add('num');
   return td;
 }
@@ -155,7 +176,51 @@ function renderTable(rows) {
   output.replaceChildren(wrap);
 }
 
+// Rows of the table currently shown (null when nothing valid is shown)
+let shownRows = null;
+
+// Raw values (no thousands separators) so pasting into a spreadsheet keeps numbers usable
+function toTSV(cols, rows) {
+  const clean = v => isEmpty(v) ? '' : String(v).replace(/[\t\r\n]+/g, ' ');
+  const lines = [cols.map(prettyHeader).join('\t')];
+  for (const r of rows) lines.push(cols.map(c => clean(r[c])).join('\t'));
+  return lines.join('\n');
+}
+
+const escHtml = s => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+
+function toHTML(cols, rows) {
+  const cell = v => `<td>${isEmpty(v) ? '' : escHtml(String(v))}</td>`;
+  const head = `<tr>${cols.map(c => `<th>${escHtml(prettyHeader(c))}</th>`).join('')}</tr>`;
+  const body = rows.map(r => `<tr>${cols.map(c => cell(r[c])).join('')}</tr>`).join('');
+  return `<table><thead>${head}</thead><tbody>${body}</tbody></table>`;
+}
+
+async function copyTable() {
+  if (!shownRows) {
+    setStatus('Show a table first.', true);
+    return;
+  }
+  const cols = [...new Set(shownRows.flatMap(r => Object.keys(r)))];
+  const tsv = toTSV(cols, shownRows);
+  try {
+    if (window.ClipboardItem) {
+      // Rich copy: pastes as a table into Sheets/Docs, plain TSV elsewhere
+      await navigator.clipboard.write([new ClipboardItem({
+        'text/html': new Blob([toHTML(cols, shownRows)], { type: 'text/html' }),
+        'text/plain': new Blob([tsv], { type: 'text/plain' }),
+      })]);
+    } else {
+      await navigator.clipboard.writeText(tsv);
+    }
+    setStatus(`Copied ${shownRows.length} rows to clipboard.`, false);
+  } catch (e) {
+    setStatus('Copy failed: ' + e.message, true);
+  }
+}
+
 function showTable() {
+  shownRows = null;
   const text = input.value.trim();
   if (!text) {
     output.replaceChildren();
@@ -180,6 +245,7 @@ function showTable() {
   }
 
   renderTable(data);
+  shownRows = data;
   const colCount = new Set(data.flatMap(r => Object.keys(r))).size;
   setStatus(`${data.length} rows, ${colCount} columns`, false);
 }
@@ -190,6 +256,7 @@ function setStatus(msg, isError) {
 }
 
 document.getElementById('show').addEventListener('click', showTable);
+document.getElementById('copy').addEventListener('click', copyTable);
 input.addEventListener('keydown', e => {
   if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) showTable();
 });
